@@ -19,9 +19,9 @@ type Dependency struct {
 	Indexed bool
 }
 
-// Call describes a method name invoked on a value, like "Foo" in "a.Foo()".
-// Call names are reported separately and are not variable paths.
-type Call struct {
+// MethodCall describes a method invoked on a value, like "Foo" in "a.Foo()".
+// Method names are reported separately and are not variable paths.
+type MethodCall struct {
 	// Name is the name of the called method.
 	Name string
 	// Count is the number of times the method is called.
@@ -33,7 +33,7 @@ type Dependencies struct {
 	// Vars lists external variable dependencies in lexicographic path order.
 	Vars []Dependency
 	// Calls lists method call names in lexicographic order.
-	Calls []Call
+	Calls []MethodCall
 }
 
 // ExamineDependencies parses the expression and returns all external data
@@ -54,7 +54,7 @@ func ExamineDependencies(input string) (*Dependencies, error) {
 
 type dependencyExaminer struct {
 	vars   map[string]*Dependency
-	calls  map[string]*Call
+	calls  map[string]*MethodCall
 	scopes []map[string]bool
 }
 
@@ -104,8 +104,6 @@ func (e *dependencyExaminer) walk(node ast.Node) {
 		e.walkRef(n)
 	case *ast.SliceNode:
 		e.walkRef(n)
-		e.walk(n.From)
-		e.walk(n.To)
 	case *ast.CallNode:
 		e.walkCall(n)
 	case *ast.BuiltinNode:
@@ -164,7 +162,7 @@ func (e *dependencyExaminer) walkCall(n *ast.CallNode) {
 
 	if member, isMember := callee.(*ast.MemberNode); isMember {
 		e.walkRef(member.Node)
-		if property, isField := member.Property.(*ast.StringNode); isField {
+		if property, isField := member.Property.(*ast.StringNode); isField && isFieldAccess(member) {
 			e.addCall(property.Value)
 		} else {
 			e.walk(member.Property)
@@ -199,7 +197,7 @@ func (e *dependencyExaminer) refOf(node ast.Node) ref {
 		if !parent.ok {
 			return ref{}
 		}
-		if property, isField := n.Property.(*ast.StringNode); isField {
+		if property, isField := n.Property.(*ast.StringNode); isField && isFieldAccess(n) {
 			return ref{
 				path:    parent.path + "." + property.Value,
 				indexed: parent.indexed,
@@ -262,13 +260,23 @@ func (e *dependencyExaminer) walkRefIndices(node ast.Node) {
 	case *ast.ChainNode:
 		e.walkRefIndices(n.Node)
 	case *ast.MemberNode:
-		if _, isField := n.Property.(*ast.StringNode); !isField {
+		if _, isField := n.Property.(*ast.StringNode); !isField || !isFieldAccess(n) {
 			e.walk(n.Property)
 		}
 		e.walkRefIndices(n.Node)
 	case *ast.SliceNode:
+		e.walk(n.From)
+		e.walk(n.To)
 		e.walkRefIndices(n.Node)
 	}
+}
+
+// isFieldAccess reports whether a member node was written with dot syntax,
+// as in "a.b", rather than bracket syntax, as in "a[b]" or "a["b"]".
+// The parser points a dot member node at its property token and a bracket
+// member node at the opening bracket, so equal offsets mean dot syntax.
+func isFieldAccess(n *ast.MemberNode) bool {
+	return n.Location().From == n.Property.Location().From
 }
 
 func (e *dependencyExaminer) add(path string, indexed bool) {
@@ -288,18 +296,21 @@ func (e *dependencyExaminer) add(path string, indexed bool) {
 
 func (e *dependencyExaminer) addCall(name string) {
 	if e.calls == nil {
-		e.calls = map[string]*Call{}
+		e.calls = map[string]*MethodCall{}
 	}
 	call, ok := e.calls[name]
 	if !ok {
-		call = &Call{Name: name}
+		call = &MethodCall{Name: name}
 		e.calls[name] = call
 	}
 	call.Count++
 }
 
 func (e *dependencyExaminer) result() *Dependencies {
-	deps := &Dependencies{}
+	deps := &Dependencies{
+		Vars:  []Dependency{},
+		Calls: []MethodCall{},
+	}
 	for _, dep := range e.vars {
 		deps.Vars = append(deps.Vars, *dep)
 	}
