@@ -12,7 +12,19 @@ func TestExamineDependencies(t *testing.T) {
 		code string
 		vars map[string]int
 	}{
-		// filled in later
+		// Nested fields and indices.
+		{`a`, map[string]int{"a": 1}},
+		{`a.b.c`, map[string]int{"a.b.c": 1}},
+		{`a.b.c + a.b.c`, map[string]int{"a.b.c": 2}},
+		{`a[0]`, map[string]int{"a": 1}},
+		{`a[0].b`, map[string]int{"a.b": 1}},
+		{`a[0].b[1].c`, map[string]int{"a.b.c": 1}},
+		{`a[i]`, map[string]int{"a": 1, "i": 1}},
+		{`a["key"].b`, map[string]int{"a.key.b": 1}},
+		{`a.b[0] + a.b`, map[string]int{"a.b": 2}},
+		{`a[1:2]`, map[string]int{"a": 1}},
+		{`a[i:j]`, map[string]int{"a": 1, "i": 1, "j": 1}},
+		{`foo.bar.baz.qux`, map[string]int{"foo.bar.baz.qux": 1}},
 	}
 
 	for _, tt := range tests {
@@ -27,4 +39,12 @@ func TestExamineDependencies(t *testing.T) {
 			require.Equal(t, tt.vars, got)
 		})
 	}
+}
+
+func TestExamineDependencies_Indexed(t *testing.T) {
+	deps, err := expr.ExamineDependencies(`a.b[0] + a.b`)
+	require.NoError(t, err)
+	require.Equal(t, []expr.Dependency{
+		{Path: "a.b", Count: 2, Indexed: true},
+	}, deps.Vars)
 }
