@@ -53,8 +53,28 @@ func ExamineDependencies(input string) (*Dependencies, error) {
 }
 
 type dependencyExaminer struct {
-	vars  map[string]*Dependency
-	calls map[string]*Call
+	vars   map[string]*Dependency
+	calls  map[string]*Call
+	scopes []map[string]bool
+}
+
+func (e *dependencyExaminer) pushScope(name string) {
+	e.scopes = append(e.scopes, map[string]bool{name: true})
+}
+
+func (e *dependencyExaminer) popScope() {
+	e.scopes = e.scopes[:len(e.scopes)-1]
+}
+
+// isLocal reports whether a name is bound by an enclosing let or closure
+// parameter, with the nearest binding taking precedence.
+func (e *dependencyExaminer) isLocal(name string) bool {
+	for i := len(e.scopes) - 1; i >= 0; i-- {
+		if e.scopes[i][name] {
+			return true
+		}
+	}
+	return false
 }
 
 // ref is a resolved reference expression, such as "a.b.c" or "a[0]".
@@ -95,8 +115,12 @@ func (e *dependencyExaminer) walk(node ast.Node) {
 	case *ast.PredicateNode:
 		e.walk(n.Node)
 	case *ast.VariableDeclaratorNode:
+		// The value is evaluated before the binding exists, so an outer
+		// variable of the same name is still visible there.
 		e.walk(n.Value)
+		e.pushScope(n.Name)
 		e.walk(n.Expr)
+		e.popScope()
 	case *ast.SequenceNode:
 		for _, n := range n.Nodes {
 			e.walk(n)
@@ -152,7 +176,9 @@ func (e *dependencyExaminer) walkCall(n *ast.CallNode) {
 		if _, isBuiltin := builtin.Index[ident.Value]; isBuiltin {
 			return
 		}
-		e.add(ident.Value, false)
+		if !e.isLocal(ident.Value) {
+			e.add(ident.Value, false)
+		}
 		return
 	}
 
@@ -165,7 +191,7 @@ func (e *dependencyExaminer) walkCall(n *ast.CallNode) {
 func (e *dependencyExaminer) refOf(node ast.Node) ref {
 	switch n := node.(type) {
 	case *ast.IdentifierNode:
-		return ref{path: n.Value, ok: true}
+		return ref{path: n.Value, local: e.isLocal(n.Value), ok: true}
 	case *ast.ChainNode:
 		return e.refOf(n.Node)
 	case *ast.MemberNode:

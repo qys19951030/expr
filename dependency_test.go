@@ -38,6 +38,22 @@ func TestExamineDependencies(t *testing.T) {
 		{`fn(a) + fn(b)`, map[string]int{"fn": 2, "a": 1, "b": 1}, nil},
 		{`a + myFn()`, map[string]int{"a": 1, "myFn": 1}, nil},
 
+		// Let bindings are local and do not leak as dependencies.
+		{`let x = 1; x + y`, map[string]int{"y": 1}, nil},
+		{`let x = a; x.b`, map[string]int{"a": 1}, nil},
+		{`let x = a; x + x`, map[string]int{"a": 1}, nil},
+		{`let x = 1; let y = x + z; x + y`, map[string]int{"z": 1}, nil},
+		// Shadowing: the nearest binding wins, outer names do not leak.
+		{`let x = a; let x = b; x + x`, map[string]int{"a": 1, "b": 1}, nil},
+		{`let x = a; (let x = b; x) + x`, map[string]int{"a": 1, "b": 1}, nil},
+		// Local bindings apply inside predicates.
+		{`map(items, let p = .Price; p * qty)`, map[string]int{"items": 1, "qty": 1}, nil},
+		{`map(items, let x = tax; .Price * x)`, map[string]int{"items": 1, "tax": 1}, nil},
+		// Predicate parameters (#, #index, #acc) are not dependencies.
+		{`filter(items, # > threshold)`, map[string]int{"items": 1, "threshold": 1}, nil},
+		{`reduce(items, #acc + # + extra, init)`, map[string]int{"items": 1, "extra": 1, "init": 1}, nil},
+		{`all(1..3, { all(1..3, { # > 0 }) and # > 0 })`, map[string]int{}, nil},
+
 		// Method calls: receiver is a dependency, method name is a call marker.
 		{`a.Foo()`, map[string]int{"a": 1}, map[string]int{"Foo": 1}},
 		{`a.b.Foo() + a.b.Bar()`, map[string]int{"a.b": 2}, map[string]int{"Foo": 1, "Bar": 1}},
