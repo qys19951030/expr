@@ -4,6 +4,7 @@ import (
 	"sort"
 
 	"github.com/expr-lang/expr/ast"
+	"github.com/expr-lang/expr/builtin"
 	"github.com/expr-lang/expr/parser"
 )
 
@@ -82,14 +83,11 @@ func (e *dependencyExaminer) walk(node ast.Node) {
 	case *ast.MemberNode:
 		e.walkRef(n)
 	case *ast.SliceNode:
-		e.walkRef(n.Node)
+		e.walkRef(n)
 		e.walk(n.From)
 		e.walk(n.To)
 	case *ast.CallNode:
-		e.walk(n.Callee)
-		for _, arg := range n.Arguments {
-			e.walk(arg)
-		}
+		e.walkCall(n)
 	case *ast.BuiltinNode:
 		for _, arg := range n.Arguments {
 			e.walk(arg)
@@ -119,6 +117,46 @@ func (e *dependencyExaminer) walk(node ast.Node) {
 		e.walk(n.Key)
 		e.walk(n.Value)
 	}
+}
+
+// walkCall records the callee of a call and then walks the arguments.
+// Builtin functions are not dependencies, though their arguments still are.
+// A call of a non-builtin identifier is one dependency named after the callee.
+// A method call counts its receiver as a dependency and records the method
+// name as a call marker instead of a variable path.
+func (e *dependencyExaminer) walkCall(n *ast.CallNode) {
+	for _, arg := range n.Arguments {
+		e.walk(arg)
+	}
+
+	callee := n.Callee
+	for {
+		chain, isChain := callee.(*ast.ChainNode)
+		if !isChain {
+			break
+		}
+		callee = chain.Node
+	}
+
+	if member, isMember := callee.(*ast.MemberNode); isMember {
+		e.walkRef(member.Node)
+		if property, isField := member.Property.(*ast.StringNode); isField {
+			e.addCall(property.Value)
+		} else {
+			e.walk(member.Property)
+		}
+		return
+	}
+
+	if ident, isIdent := callee.(*ast.IdentifierNode); isIdent {
+		if _, isBuiltin := builtin.Index[ident.Value]; isBuiltin {
+			return
+		}
+		e.add(ident.Value, false)
+		return
+	}
+
+	e.walk(callee)
 }
 
 // refOf resolves a chain of identifiers and member accesses into a path.
@@ -175,7 +213,19 @@ func (e *dependencyExaminer) walkRef(node ast.Node) {
 		e.walkRefIndices(node)
 		return
 	}
-	e.walk(node)
+	switch n := node.(type) {
+	case *ast.ChainNode:
+		e.walkRef(n.Node)
+	case *ast.MemberNode:
+		e.walk(n.Node)
+		e.walk(n.Property)
+	case *ast.SliceNode:
+		e.walk(n.Node)
+		e.walk(n.From)
+		e.walk(n.To)
+	default:
+		e.walk(node)
+	}
 }
 
 // walkRefIndices walks the subexpressions embedded in a reference chain, such
@@ -191,8 +241,6 @@ func (e *dependencyExaminer) walkRefIndices(node ast.Node) {
 		}
 		e.walkRefIndices(n.Node)
 	case *ast.SliceNode:
-		e.walk(n.From)
-		e.walk(n.To)
 		e.walkRefIndices(n.Node)
 	}
 }
@@ -210,6 +258,18 @@ func (e *dependencyExaminer) add(path string, indexed bool) {
 	if indexed {
 		dep.Indexed = true
 	}
+}
+
+func (e *dependencyExaminer) addCall(name string) {
+	if e.calls == nil {
+		e.calls = map[string]*Call{}
+	}
+	call, ok := e.calls[name]
+	if !ok {
+		call = &Call{Name: name}
+		e.calls[name] = call
+	}
+	call.Count++
 }
 
 func (e *dependencyExaminer) result() *Dependencies {
